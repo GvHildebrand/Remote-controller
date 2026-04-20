@@ -86,13 +86,23 @@ async function scan() {
   scanBtn.disabled = true;
   scanBtn.textContent = "Scanning…";
   try {
-    const result = await api("/api/discover", { method: "POST" });
+    const subnetInput = document.getElementById("scan-subnet");
+    const subnets = subnetInput && subnetInput.value.trim() ? subnetInput.value.trim() : "";
+    const result = await api("/api/discover", {
+      method: "POST",
+      body: JSON.stringify({ subnets }),
+    });
     renderTvs(result.all);
-    showStatus(
-      result.found.length
-        ? `Found ${result.found.length} TV${result.found.length === 1 ? "" : "s"}`
-        : "No new TVs found. Ensure the TV is on for discovery."
-    );
+    const scanned = (result.diagnostics && result.diagnostics.scanned_subnets) || [];
+    const ips = (result.diagnostics && result.diagnostics.local_ips) || [];
+    if (result.found.length) {
+      showStatus(`Found ${result.found.length} TV${result.found.length === 1 ? "" : "s"}`);
+    } else {
+      const hint = scanned.length
+        ? `Scanned ${scanned.join(", ")} (phone IPs: ${ips.join(", ")}). No TV responded.`
+        : `No local subnets detected (phone IPs: ${ips.join(", ") || "none"}).`;
+      showStatus(hint, "err");
+    }
   } catch (error) {
     showStatus(error.message, "err");
   } finally {

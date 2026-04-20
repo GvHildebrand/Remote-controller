@@ -57,9 +57,17 @@ def list_tvs() -> object:
 
 @app.route("/api/discover", methods=["POST"])
 def discover() -> object:
-    found = discover_tvs()
+    body = request.get_json(silent=True) or {}
+    extra_subnets = body.get("subnets") or []
+    if isinstance(extra_subnets, str):
+        extra_subnets = [s.strip() for s in extra_subnets.split(",") if s.strip()]
+    found, diagnostics = discover_tvs(extra_subnets=extra_subnets)
     store = _merge_into_store(found)
-    return jsonify({"found": [tv.to_dict() for tv in found], "all": list(store.values())})
+    return jsonify({
+        "found": [tv.to_dict() for tv in found],
+        "all": list(store.values()),
+        "diagnostics": diagnostics,
+    })
 
 
 @app.route("/api/tvs", methods=["POST"])

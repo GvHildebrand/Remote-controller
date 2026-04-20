@@ -114,6 +114,34 @@ def _get_local_ip() -> str:
         return ""
 
 
+def _all_local_ips() -> list[str]:
+    """All non-loopback, non-link-local IPv4 addresses on the device.
+
+    iOS may have multiple interfaces: en0 (Wi-Fi), utun* (VPN / iCloud
+    Private Relay), pdp_ip0 (cellular). We want to scan the Wi-Fi
+    subnet, so we collect every interface and let the caller derive a
+    /24 from each.
+    """
+    ips: set[str] = set()
+    primary = _get_local_ip()
+    if primary:
+        ips.add(primary)
+
+    try:
+        result = subprocess.run(
+            ["ifconfig"], capture_output=True, text=True, timeout=3
+        )
+        for match in re.finditer(r"inet\s+(\d+\.\d+\.\d+\.\d+)", result.stdout):
+            ip = match.group(1)
+            if ip.startswith("127.") or ip.startswith("169.254."):
+                continue
+            ips.add(ip)
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+    return sorted(ips)
+
+
 def _probe_port(ip: str, port: int, timeout: float = 0.35) -> bool:
     try:
         with socket.create_connection((ip, port), timeout=timeout):
@@ -205,35 +233,56 @@ _SCAN_FINGERPRINTS: list[tuple[int, callable]] = [
 ]
 
 
-def _subnet_scan() -> list[DiscoveredTV]:
-    local_ip = _get_local_ip()
-    if not local_ip:
-        return []
-    try:
-        network = ipaddress.IPv4Network(f"{local_ip}/24", strict=False)
-    except ValueError:
-        return []
+def _subnet_scan(extra_subnets: list[str] | None = None) -> tuple[list[DiscoveredTV], list[str]]:
+    """Scan every /24 derived from each local interface IP, plus any
+    manually supplied subnets. Returns (discovered_tvs, scanned_subnets)."""
+    local_ips = set(_all_local_ips())
+    networks: dict[str, ipaddress.IPv4Network] = {}
 
-    hosts = [str(h) for h in network.hosts() if str(h) != local_ip]
+    for ip in local_ips:
+        try:
+            net = ipaddress.IPv4Network(f"{ip}/24", strict=False)
+            networks[str(net)] = net
+        except ValueError:
+            continue
+
+    for raw in extra_subnets or []:
+        try:
+            net = ipaddress.IPv4Network(raw, strict=False)
+            networks[str(net)] = net
+        except ValueError:
+            continue
+
+    if not networks:
+        return [], []
+
+    hosts: list[str] = []
+    for net in networks.values():
+        for host in net.hosts():
+            ip_str = str(host)
+            if ip_str not in local_ips:
+                hosts.append(ip_str)
 
     found: dict[str, DiscoveredTV] = {}
 
-    def work(ip_port_fn: tuple[str, int, callable]) -> DiscoveredTV | None:
-        ip, port, identify = ip_port_fn
+    def work(task: tuple[str, int, callable]) -> DiscoveredTV | None:
+        ip, port, identify = task
         if not _probe_port(ip, port):
             return None
         return identify(ip)
 
-    tasks: list[tuple[str, int, callable]] = []
-    for ip in hosts:
-        for port, identify in _SCAN_FINGERPRINTS:
-            tasks.append((ip, port, identify))
+    tasks: list[tuple[str, int, callable]] = [
+        (ip, port, identify)
+        for ip in hosts
+        for port, identify in _SCAN_FINGERPRINTS
+    ]
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=80) as pool:
-        for result in pool.map(work, tasks, timeout=15):
+        for result in pool.map(work, tasks, timeout=30):
             if result and result.ip not in found:
                 found[result.ip] = result
-    return list(found.values())
+
+    return list(found.values()), sorted(networks.keys())
 
 
 def _parse_headers(raw: str) -> dict[str, str]:
@@ -308,12 +357,18 @@ def _lookup_mac(ip: str) -> str:
     return match.group(0).lower() if match else ""
 
 
-def discover_tvs() -> list[DiscoveredTV]:
-    """Discover TVs on the local network. Returns a de-duplicated list."""
+def discover_tvs(extra_subnets: list[str] | None = None) -> tuple[list[DiscoveredTV], dict]:
+    """Discover TVs on the local network. Returns (tvs, diagnostics)."""
     seen: dict[str, DiscoveredTV] = {}
+    diagnostics: dict = {
+        "local_ips": _all_local_ips(),
+        "ssdp_responses": 0,
+        "scanned_subnets": [],
+    }
 
     for target in SEARCH_TARGETS:
         for raw in _ssdp_search(target):
+            diagnostics["ssdp_responses"] += 1
             headers = _parse_headers(raw)
             location = headers.get("LOCATION", "")
             server = headers.get("SERVER", "")
@@ -349,13 +404,15 @@ def discover_tvs() -> list[DiscoveredTV]:
                 tv.brand = brand
 
     if not seen:
-        for tv in _subnet_scan():
+        scan_results, scanned_subnets = _subnet_scan(extra_subnets)
+        diagnostics["scanned_subnets"] = scanned_subnets
+        for tv in scan_results:
             seen[tv.ip] = tv
 
     for tv in seen.values():
         tv.mac = _lookup_mac(tv.ip)
 
-    return list(seen.values())
+    return list(seen.values()), diagnostics
 
 
 def manual_tv(ip: str, brand: str = "generic", mac: str = "") -> DiscoveredTV:
