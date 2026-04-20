@@ -45,6 +45,22 @@ def install_if_missing() -> bool:
     return True
 
 
+def refresh_user_site() -> None:
+    """Add user-site to sys.path so newly-installed wheels become importable
+    without spawning a new Python process (iOS a-Shell blocks os.execv)."""
+    try:
+        import importlib
+        import site
+        importlib.invalidate_caches()
+        user_site = site.getusersitepackages()
+        paths = user_site if isinstance(user_site, list) else [user_site]
+        for path in paths:
+            if path and path not in sys.path:
+                sys.path.insert(0, path)
+    except Exception:
+        pass
+
+
 def fetch_source() -> None:
     print(f">> Downloading {TARBALL}")
     with urllib.request.urlopen(TARBALL) as response:
@@ -55,17 +71,23 @@ def fetch_source() -> None:
 
 
 def main() -> None:
-    install_if_missing()
+    newly_installed = install_if_missing()
+    if newly_installed:
+        refresh_user_site()
     if not os.path.isdir(DIRNAME):
         fetch_source()
     else:
         print(f">> Reusing existing {DIRNAME}")
     os.chdir(DIRNAME)
     print(">> Starting server. Open http://127.0.0.1:5000 in Safari.")
-    # Hand off to a fresh Python process so newly-installed user-site
-    # packages are picked up by sys.path (pip install in the current
-    # process does not refresh the running interpreter's module cache).
-    os.execv(sys.executable, [sys.executable, "server.py"])
+    import runpy
+    try:
+        runpy.run_path("server.py", run_name="__main__")
+    except KeyboardInterrupt:
+        print(">> Server stopped.")
+    except Exception:
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
