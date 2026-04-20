@@ -225,11 +225,54 @@ def _identify_sony(ip: str) -> DiscoveredTV | None:
     return None
 
 
+def _identify_chromecast(ip: str) -> DiscoveredTV | None:
+    """Chromecast / Google Cast / Android TV / Google TV / many smart TVs
+    with built-in Cast respond on port 8008."""
+    try:
+        response = requests.get(
+            f"http://{ip}:8008/setup/eureka_info?params=name,device_info",
+            timeout=2,
+        )
+        if response.ok:
+            try:
+                data = response.json()
+                name = data.get("name") or data.get("device_info", {}).get("ssdp_udn") or f"Cast device @ {ip}"
+                model = (
+                    data.get("device_info", {}).get("model_name", "")
+                    or data.get("model_name", "")
+                )
+                brand_hint = (name + " " + model).lower()
+                if "android" in brand_hint or "google tv" in brand_hint or "bravia" in brand_hint:
+                    brand = "android-tv"
+                else:
+                    brand = "chromecast"
+                return DiscoveredTV(ip=ip, brand=brand, name=name, model=model)
+            except ValueError:
+                pass
+    except requests.RequestException:
+        pass
+    if _probe_port(ip, 8008):
+        return DiscoveredTV(ip=ip, brand="chromecast", name=f"Cast device @ {ip}")
+    return None
+
+
+def _identify_androidtv(ip: str) -> DiscoveredTV | None:
+    """Android TV / Fire TV expose ADB on 5555 or the Android TV remote
+    protocol on 6466/6467."""
+    for port in (6466, 6467, 5555):
+        if _probe_port(ip, port):
+            return DiscoveredTV(ip=ip, brand="android-tv", name=f"Android TV @ {ip}")
+    return None
+
+
 _SCAN_FINGERPRINTS: list[tuple[int, callable]] = [
     (8060, _identify_roku),
     (8001, _identify_samsung),
     (3000, _identify_lg),
     (80, _identify_sony),
+    (8008, _identify_chromecast),
+    (6466, _identify_androidtv),
+    (5555, _identify_androidtv),
 ]
 
 
