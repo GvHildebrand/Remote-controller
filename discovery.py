@@ -1,6 +1,16 @@
-"""TV discovery on the local Wi-Fi network via SSDP and ARP."""
+"""TV discovery on the local Wi-Fi network.
+
+Two strategies are used, in order:
+1. SSDP (multicast). Fast and brand-agnostic, but blocked in sandboxed
+   environments like iOS a-Shell (OSError 65 / 49 / 50 on sendto).
+2. Subnet port scan (unicast). TCP-probes each host on the local /24 for
+   well-known TV control ports, then fingerprints responses. Slower but
+   works in restrictive sandboxes.
+"""
 from __future__ import annotations
 
+import concurrent.futures
+import ipaddress
 import re
 import socket
 import subprocess
@@ -63,21 +73,167 @@ def _ssdp_search(target: str) -> list[str]:
         f"ST: {target}\r\n\r\n"
     ).encode()
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    except OSError:
+        return []
+
+    try:
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+    except OSError:
+        pass
     sock.settimeout(SSDP_TIMEOUT)
     responses: list[str] = []
     try:
-        sock.sendto(message, (SSDP_ADDR, SSDP_PORT))
+        try:
+            sock.sendto(message, (SSDP_ADDR, SSDP_PORT))
+        except OSError:
+            # Multicast blocked (iOS a-Shell sandbox, some VPNs). Caller
+            # will fall back to the unicast subnet scan.
+            return []
         while True:
             try:
                 data, _ = sock.recvfrom(8192)
                 responses.append(data.decode("utf-8", errors="ignore"))
             except socket.timeout:
                 break
+            except OSError:
+                break
     finally:
         sock.close()
     return responses
+
+
+def _get_local_ip() -> str:
+    """Best-effort local interface IP without requiring multicast."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except OSError:
+        return ""
+
+
+def _probe_port(ip: str, port: int, timeout: float = 0.35) -> bool:
+    try:
+        with socket.create_connection((ip, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _identify_roku(ip: str) -> DiscoveredTV | None:
+    try:
+        response = requests.get(f"http://{ip}:8060/query/device-info", timeout=2)
+    except requests.RequestException:
+        return None
+    if not response.ok:
+        return None
+    name = re.search(r"<friendly-device-name>([^<]+)</friendly-device-name>", response.text)
+    if not name:
+        name = re.search(r"<user-device-name>([^<]+)</user-device-name>", response.text)
+    model = re.search(r"<model-name>([^<]+)</model-name>", response.text)
+    return DiscoveredTV(
+        ip=ip,
+        brand="roku",
+        name=(name.group(1) if name else f"Roku @ {ip}"),
+        model=(model.group(1) if model else ""),
+    )
+
+
+def _identify_samsung(ip: str) -> DiscoveredTV | None:
+    for port in (8001, 8002):
+        if not _probe_port(ip, port):
+            continue
+        try:
+            response = requests.get(f"http://{ip}:8001/api/v2/", timeout=2)
+            if response.ok:
+                try:
+                    device = response.json().get("device", {})
+                    return DiscoveredTV(
+                        ip=ip,
+                        brand="samsung",
+                        name=device.get("name") or f"Samsung TV @ {ip}",
+                        model=device.get("modelName", ""),
+                    )
+                except ValueError:
+                    pass
+        except requests.RequestException:
+            pass
+        return DiscoveredTV(ip=ip, brand="samsung", name=f"Samsung TV @ {ip}")
+    return None
+
+
+def _identify_lg(ip: str) -> DiscoveredTV | None:
+    if _probe_port(ip, 3000) or _probe_port(ip, 3001):
+        return DiscoveredTV(ip=ip, brand="lg", name=f"LG TV @ {ip}")
+    return None
+
+
+def _identify_sony(ip: str) -> DiscoveredTV | None:
+    try:
+        response = requests.post(
+            f"http://{ip}/sony/system",
+            json={
+                "method": "getSystemInformation",
+                "id": 1,
+                "params": [],
+                "version": "1.0",
+            },
+            timeout=2,
+        )
+        if response.ok:
+            data = response.json()
+            if "result" in data and data["result"]:
+                info = data["result"][0]
+                return DiscoveredTV(
+                    ip=ip,
+                    brand="sony",
+                    name=info.get("name", f"Sony TV @ {ip}"),
+                    model=info.get("model", ""),
+                )
+    except (requests.RequestException, ValueError, KeyError):
+        pass
+    return None
+
+
+_SCAN_FINGERPRINTS: list[tuple[int, callable]] = [
+    (8060, _identify_roku),
+    (8001, _identify_samsung),
+    (3000, _identify_lg),
+    (80, _identify_sony),
+]
+
+
+def _subnet_scan() -> list[DiscoveredTV]:
+    local_ip = _get_local_ip()
+    if not local_ip:
+        return []
+    try:
+        network = ipaddress.IPv4Network(f"{local_ip}/24", strict=False)
+    except ValueError:
+        return []
+
+    hosts = [str(h) for h in network.hosts() if str(h) != local_ip]
+
+    found: dict[str, DiscoveredTV] = {}
+
+    def work(ip_port_fn: tuple[str, int, callable]) -> DiscoveredTV | None:
+        ip, port, identify = ip_port_fn
+        if not _probe_port(ip, port):
+            return None
+        return identify(ip)
+
+    tasks: list[tuple[str, int, callable]] = []
+    for ip in hosts:
+        for port, identify in _SCAN_FINGERPRINTS:
+            tasks.append((ip, port, identify))
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=80) as pool:
+        for result in pool.map(work, tasks, timeout=15):
+            if result and result.ip not in found:
+                found[result.ip] = result
+    return list(found.values())
 
 
 def _parse_headers(raw: str) -> dict[str, str]:
@@ -191,6 +347,10 @@ def discover_tvs() -> list[DiscoveredTV]:
             brand = _detect_brand(fingerprint)
             if brand != "generic" or tv.brand == "":
                 tv.brand = brand
+
+    if not seen:
+        for tv in _subnet_scan():
+            seen[tv.ip] = tv
 
     for tv in seen.values():
         tv.mac = _lookup_mac(tv.ip)
