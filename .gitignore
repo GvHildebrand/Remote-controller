@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+tvs.json
+.DS_Store

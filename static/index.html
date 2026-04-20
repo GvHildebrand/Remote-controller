@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0b0f17" />
+  <title>Wi-Fi TV Remote</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="top">
+    <h1>Wi-Fi Remote</h1>
+    <button id="scan" class="scan">Scan</button>
+  </header>
+
+  <section id="tv-list" class="tv-list" aria-live="polite"></section>
+
+  <section id="add-tv" class="add-tv">
+    <details>
+      <summary>Add TV manually</summary>
+      <form id="add-form">
+        <label>IP <input name="ip" placeholder="192.168.1.42" required /></label>
+        <label>MAC <input name="mac" placeholder="aa:bb:cc:dd:ee:ff (for power-on)" /></label>
+        <label>Brand
+          <select name="brand">
+            <option value="generic">Generic (Wake-on-LAN only)</option>
+            <option value="samsung">Samsung (Tizen)</option>
+            <option value="lg">LG (WebOS)</option>
+            <option value="roku">Roku</option>
+            <option value="sony">Sony</option>
+            <option value="vizio">Vizio</option>
+          </select>
+        </label>
+        <label>Name <input name="name" placeholder="Living Room TV" /></label>
+        <button type="submit">Save</button>
+      </form>
+    </details>
+  </section>
+
+  <section id="remote" class="remote hidden">
+    <div class="remote-header">
+      <div>
+        <div id="remote-name" class="remote-name"></div>
+        <div id="remote-meta" class="remote-meta"></div>
+      </div>
+      <button id="close-remote" class="close">×</button>
+    </div>
+
+    <button id="power" class="power-btn">Power On</button>
+
+    <div class="dpad">
+      <button data-key="up" class="d up">▲</button>
+      <button data-key="left" class="d left">◀</button>
+      <button data-key="ok" class="d ok">OK</button>
+      <button data-key="right" class="d right">▶</button>
+      <button data-key="down" class="d down">▼</button>
+    </div>
+
+    <div class="row">
+      <button data-key="home">Home</button>
+      <button data-key="back">Back</button>
+      <button data-key="mute">Mute</button>
+    </div>
+    <div class="row">
+      <button data-key="volume_down">Vol −</button>
+      <button data-key="volume_up">Vol +</button>
+    </div>
+    <div class="row">
+      <button data-key="channel_down">Ch −</button>
+      <button data-key="channel_up">Ch +</button>
+    </div>
+
+    <div id="status" class="status"></div>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>
