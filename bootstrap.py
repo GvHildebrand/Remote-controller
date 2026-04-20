@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import io
 import os
-import runpy
 import subprocess
 import sys
 import tarfile
@@ -24,18 +23,26 @@ DIRNAME = f"Remote-controller-{BRANCH.replace('/', '-')}"
 REQUIREMENTS = ["flask", "requests", "websocket-client"]
 
 
-def ensure_deps() -> None:
+def install_if_missing() -> bool:
+    """Return True if any package was newly installed (caller should re-exec)."""
     missing: list[str] = []
-    for module, pkg in (("flask", "flask"), ("requests", "requests"), ("websocket", "websocket-client")):
+    for module, pkg in (
+        ("flask", "flask"),
+        ("requests", "requests"),
+        ("websocket", "websocket-client"),
+    ):
         try:
             __import__(module)
         except ImportError:
             missing.append(pkg)
     if not missing:
         print(">> Dependencies already installed.")
-        return
+        return False
     print(f">> Installing {', '.join(missing)}...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", *missing])
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "--quiet", *missing]
+    )
+    return True
 
 
 def fetch_source() -> None:
@@ -48,14 +55,17 @@ def fetch_source() -> None:
 
 
 def main() -> None:
-    ensure_deps()
+    install_if_missing()
     if not os.path.isdir(DIRNAME):
         fetch_source()
     else:
         print(f">> Reusing existing {DIRNAME}")
     os.chdir(DIRNAME)
     print(">> Starting server. Open http://127.0.0.1:5000 in Safari.")
-    runpy.run_path("server.py", run_name="__main__")
+    # Hand off to a fresh Python process so newly-installed user-site
+    # packages are picked up by sys.path (pip install in the current
+    # process does not refresh the running interpreter's module cache).
+    os.execv(sys.executable, [sys.executable, "server.py"])
 
 
 if __name__ == "__main__":
