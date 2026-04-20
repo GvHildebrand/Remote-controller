@@ -88,7 +88,7 @@ def power(ip: str) -> object:
     tv = store.get(ip)
     if not tv:
         return jsonify({"error": "Unknown TV — discover or add it first"}), 404
-    result = power_on(ip=ip, mac=tv.get("mac", ""))
+    result = power_on(ip=ip, mac=tv.get("mac", ""), brand=tv.get("brand", "generic"))
     return jsonify({"ok": result.ok, "method": result.method, "detail": result.detail})
 
 

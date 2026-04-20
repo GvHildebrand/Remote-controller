@@ -78,20 +78,43 @@ class CommandResult:
     detail: str = ""
 
 
-def power_on(ip: str, mac: str, broadcast: str = "255.255.255.255") -> CommandResult:
-    """Turn the TV on. Wake-on-LAN is the only reliable cross-brand method
-    when the TV is off, since its HTTP/WebSocket stack is down."""
+def power_on(ip: str, mac: str, brand: str = "generic", broadcast: str = "255.255.255.255") -> CommandResult:
+    """Turn the TV on. Tries brand-specific HTTP wake first (works from
+    restrictive sandboxes like iOS a-Shell that block UDP broadcast),
+    then Wake-on-LAN (broadcast + subnet broadcast + unicast to the TV)."""
+    brand = (brand or "generic").lower()
+
+    if brand == "roku":
+        try:
+            response = requests.post(f"http://{ip}:8060/keypress/PowerOn", timeout=3)
+            if response.status_code < 400:
+                return CommandResult(
+                    ok=True,
+                    method="roku-ecp",
+                    detail="Sent PowerOn via Roku ECP (requires Fast TV Start)",
+                )
+        except requests.RequestException:
+            pass
+
     if not mac:
         return CommandResult(
             ok=False,
             method="wol",
-            detail="No MAC address known for this TV. Connect once while the TV is on so the router learns its MAC, then retry.",
+            detail=(
+                "No MAC address known for this TV. Run Scan once while the TV is on "
+                "so the MAC is learned, then retry."
+            ),
         )
+
     try:
-        send_magic_packet(mac, broadcast=broadcast)
+        attempted = send_magic_packet(mac, broadcast=broadcast, target_ip=ip)
     except (OSError, ValueError) as exc:
         return CommandResult(ok=False, method="wol", detail=str(exc))
-    return CommandResult(ok=True, method="wol", detail=f"Magic packet sent to {mac}")
+    return CommandResult(
+        ok=True,
+        method="wol",
+        detail=f"Magic packet sent to {mac} via {len(attempted)} destination(s)",
+    )
 
 
 def send_key(brand: str, ip: str, key: str, token: str = "", client_key: str = "") -> CommandResult:
