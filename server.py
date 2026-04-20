@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -115,6 +117,16 @@ def key(ip: str) -> object:
 @app.route("/api/tvs/<ip>/ping", methods=["GET"])
 def ping(ip: str) -> object:
     return jsonify({"online": reachable(ip)})
+
+
+@app.route("/api/shutdown", methods=["POST"])
+def shutdown() -> object:
+    """Stop the server from the web UI so iOS users don't need Ctrl+C."""
+    def _exit_soon() -> None:
+        time.sleep(0.2)
+        os._exit(0)
+    threading.Thread(target=_exit_soon, daemon=True).start()
+    return jsonify({"ok": True, "detail": "Server shutting down."})
 
 
 if __name__ == "__main__":

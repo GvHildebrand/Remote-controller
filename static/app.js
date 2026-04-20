@@ -163,4 +163,15 @@ addForm.addEventListener("submit", async (event) => {
 });
 
 scanBtn.addEventListener("click", scan);
+
+document.getElementById("shutdown").addEventListener("click", async () => {
+  if (!confirm("Stop the server? You'll need to rerun `python server.py` in a-Shell to start it again.")) return;
+  try {
+    await fetch("/api/shutdown", { method: "POST" });
+    showStatus("Server stopped. Reopen a-Shell and run python server.py to restart.");
+  } catch {
+    showStatus("Server stopped.");
+  }
+});
+
 loadTvs();

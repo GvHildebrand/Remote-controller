@@ -42,6 +42,8 @@ button {
 button:active { transform: scale(0.97); background: #2d3748; }
 
 .scan { background: #2563eb; border-color: #2563eb; font-weight: 600; }
+.top-buttons { display: flex; gap: 8px; }
+.shutdown { background: #374151; border-color: #4b5563; font-size: 13px; padding: 10px 12px; }
 
 .tv-list {
   padding: 16px 20px;
